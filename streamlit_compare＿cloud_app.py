@@ -17,40 +17,45 @@ from google.cloud import speech
 import google.generativeai as genai
 from google.oauth2 import service_account
 
-# ==================== 匯入設定檔 ====================
-# 支援兩種模式：
-# 1. 本地開發：使用 config.py
-# 2. Streamlit Cloud：使用 st.secrets
-
+# ==================== 匯入設定檔 (修改版) ====================
+# 初始化變數
 GCP_CREDENTIALS = None
 GEMINI_API_KEY = None
 CONFIG_LOADED = False
 
-# 嘗試從 Streamlit Secrets 載入（部署模式）
-if "gcp_service_account" in st.secrets and "gemini_api_key" in st.secrets:
-    GCP_CREDENTIALS = dict(st.secrets["gcp_service_account"])
-    GEMINI_API_KEY = st.secrets["gemini_api_key"]
-    CONFIG_LOADED = True
-# 否則從 config.py 載入（本地模式）
-else:
+# 1. 優先嘗試從 Streamlit Secrets (雲端) 讀取
+if "gcp_service_account" in st.secrets and "GEMINI_API_KEY" in st.secrets:
     try:
-        from config import GCP_CREDENTIALS as GCP_CREDS, GEMINI_API_KEY as GEMINI_KEY
-        GCP_CREDENTIALS = GCP_CREDS
-        GEMINI_API_KEY = GEMINI_KEY
+        # 讀取 Gemini Key
+        GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
+        
+        # 讀取 GCP Credentials (將 TOML 物件轉為 Dict)
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        
+        # 修正 Private Key 的換行符號問題 (這是最常見的錯誤)
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+            
+        GCP_CREDENTIALS = creds_dict
+        CONFIG_LOADED = True
+    except Exception as e:
+        st.error(f"讀取 Secrets 時發生錯誤: {e}")
+
+# 2. 如果雲端讀取失敗，嘗試從本地 config.py 讀取 (本地開發用)
+if not CONFIG_LOADED:
+    try:
+        from config import GCP_CREDENTIALS as Local_GCP, GEMINI_API_KEY as Local_Gemini
+        GCP_CREDENTIALS = Local_GCP
+        GEMINI_API_KEY = Local_Gemini
         CONFIG_LOADED = True
     except ImportError:
         pass
 
-# 如果兩者都失敗
+# 3. 如果兩者都失敗
 if not CONFIG_LOADED:
-    st.error("❌ 找不到設定檔！請設定 config.py 或 Streamlit Secrets。")
-    st.info("""
-    **本地開發：** 建立 config.py 檔案
-    
-    **Streamlit Cloud：** 在設定中加入 Secrets
-    """)
+    st.error("❌ 找不到設定檔！請確認已在 Streamlit Cloud 設定 Secrets，或在本地建立 config.py。")
     st.stop()
-
+    
 # ==================== 設定與 UI 初始化 ====================
 st.set_page_config(page_title="捷運緊急語音轉譯台", page_icon="🎙️", layout="wide")
 
