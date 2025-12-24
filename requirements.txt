@@ -1,6 +1,6 @@
-streamlit>=1.28.0
-google-cloud-speech>=2.20.0
-google-generativeai>=0.3.0
-google-auth>=2.20.0
-pydub>=0.25.1
-pandas>=2.0.0
+streamlit
+google-cloud-speech
+google-generativeai
+google-auth
+pydub
+pandas
