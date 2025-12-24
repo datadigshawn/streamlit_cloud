@@ -114,6 +114,97 @@ with st.sidebar:
 
 # ==================== 工具函數 ====================
 
+def check_audio_quality(file_path):
+    """
+    檢查音訊品質並返回警告訊息
+    """
+    try:
+        cmd = [
+            'ffprobe', '-v', 'quiet', '-print_format', 'json',
+            '-show_format', '-show_streams', file_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        data = json.loads(result.stdout)
+        
+        streams = data.get('streams', [])
+        if not streams:
+            return None, []
+        
+        audio_stream = streams[0]
+        codec = audio_stream.get('codec_name', '')
+        sample_rate = int(audio_stream.get('sample_rate', 0))
+        
+        warnings = []
+        needs_conversion = False
+        
+        # 檢查編碼格式
+        if codec == 'adpcm_ima_wav':
+            warnings.append("⚠️ 使用壓縮格式（ADPCM），辨識率可能較低")
+            needs_conversion = True
+        
+        # 檢查取樣率
+        if sample_rate < 16000:
+            warnings.append(f"⚠️ 取樣率偏低（{sample_rate} Hz），建議 16000 Hz 以上")
+            needs_conversion = True
+        
+        return needs_conversion, warnings
+        
+    except Exception as e:
+        return False, []
+
+def convert_audio_to_standard_format(input_path, output_path, target_format='wav'):
+    """
+    轉換音訊為標準格式
+    
+    Parameters:
+    - input_path: 輸入音訊路徑
+    - output_path: 輸出音訊路徑
+    - target_format: 目標格式 ('wav' for STT, 'm4a' for Gemini)
+    
+    Returns:
+    - success: 是否成功
+    - message: 訊息
+    """
+    try:
+        if target_format == 'wav':
+            # Google STT 最佳格式：PCM 16kHz 單聲道
+            cmd = [
+                'ffmpeg', '-i', input_path,
+                '-ar', '16000',  # 取樣率 16kHz
+                '-ac', '1',      # 單聲道
+                '-acodec', 'pcm_s16le',  # PCM 編碼
+                '-y', output_path
+            ]
+        elif target_format == 'm4a':
+            # Gemini 最佳格式：AAC 16kHz 單聲道
+            cmd = [
+                'ffmpeg', '-i', input_path,
+                '-ar', '16000',
+                '-ac', '1',
+                '-acodec', 'aac',
+                '-b:a', '128k',  # 位元率 128kbps
+                '-y', output_path
+            ]
+        else:
+            return False, f"不支援的格式：{target_format}"
+        
+        result = subprocess.run(
+            cmd, 
+            capture_output=True, 
+            text=True, 
+            timeout=120
+        )
+        
+        if result.returncode == 0:
+            return True, f"已轉換為標準 {target_format.upper()} 格式"
+        else:
+            return False, f"轉換失敗：{result.stderr[:200]}"
+            
+    except subprocess.TimeoutExpired:
+        return False, "轉換超時"
+    except Exception as e:
+        return False, f"轉換錯誤：{str(e)[:200]}"
+
 def get_audio_info(file_path):
     """取得音訊長度 (秒)"""
     try:
@@ -144,7 +235,7 @@ def extract_datetime_from_filename(filename):
 def transcribe_google_stt(audio_path, filename, max_chunk_duration=50):
     """
     使用 Google STT 進行轉譯
-    自動處理長音訊（切分為多段避免大小限制）
+    自動檢測並轉換音訊格式，處理長音訊切分
     
     Parameters:
     - audio_path: 音訊檔案路徑
@@ -152,13 +243,35 @@ def transcribe_google_stt(audio_path, filename, max_chunk_duration=50):
     - max_chunk_duration: 最大切分長度（秒），預設 50 秒
     """
     try:
+        # 步驟 1：檢查音訊品質
+        needs_conversion, warnings = check_audio_quality(audio_path)
+        
+        # 步驟 2：如果需要，自動轉換為標準格式
+        working_path = audio_path
+        if needs_conversion:
+            temp_converted = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+            temp_converted.close()
+            
+            success, message = convert_audio_to_standard_format(
+                audio_path, 
+                temp_converted.name, 
+                target_format='wav'
+            )
+            
+            if success:
+                working_path = temp_converted.name
+            else:
+                # 轉換失敗，仍嘗試使用原檔案
+                working_path = audio_path
+        
+        # 步驟 3：建立 Google STT 客戶端
         credentials = service_account.Credentials.from_service_account_info(GCP_CREDENTIALS)
         client = speech.SpeechClient(credentials=credentials)
         
-        # 讀取音訊並檢查長度和大小
-        audio_segment = AudioSegment.from_file(audio_path)
+        # 步驟 4：讀取音訊並檢查長度和大小
+        audio_segment = AudioSegment.from_file(working_path)
         duration_seconds = len(audio_segment) / 1000.0
-        file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
+        file_size_mb = os.path.getsize(working_path) / (1024 * 1024)
         
         # 判斷是否需要切分（保守估計：超過設定長度或 8MB 就切分）
         max_size_mb = 8
@@ -175,7 +288,7 @@ def transcribe_google_stt(audio_path, filename, max_chunk_duration=50):
         
         if duration_seconds <= max_chunk_duration and file_size_mb <= max_size_mb:
             # ========== 短音訊：直接辨識 ==========
-            with open(audio_path, 'rb') as f:
+            with open(working_path, 'rb') as f:
                 content = f.read()
             
             audio = speech.RecognitionAudio(content=content)
@@ -183,7 +296,7 @@ def transcribe_google_stt(audio_path, filename, max_chunk_duration=50):
             
             # 組合結果
             transcript = "".join([result.alternatives[0].transcript for result in response.results])
-            return transcript if transcript else "[無法辨識內容]"
+            result = transcript if transcript else "[無法辨識內容]"
         
         else:
             # ========== 長音訊：切分處理 ==========
@@ -239,9 +352,18 @@ def transcribe_google_stt(audio_path, filename, max_chunk_duration=50):
             full_transcript = "".join(transcripts)
             
             if not full_transcript or full_transcript.strip() == "":
-                return "[無法辨識內容]"
-            
-            return full_transcript
+                result = "[無法辨識內容]"
+            else:
+                result = full_transcript
+        
+        # 清理暫存檔
+        if needs_conversion and working_path != audio_path:
+            try:
+                os.unlink(working_path)
+            except:
+                pass
+        
+        return result
         
     except Exception as e:
         error_msg = str(e)
@@ -257,38 +379,50 @@ def transcribe_google_stt(audio_path, filename, max_chunk_duration=50):
 
 def transcribe_gemini(audio_path):
     """
-    使用 Gemini 進行轉譯（inline 模式，直接傳送音訊 bytes）
-    不使用檔案上傳功能，改為直接將音訊嵌入請求
+    使用 Gemini 進行轉譯
+    自動檢測並轉換音訊格式為 Gemini 最佳格式（M4A/AAC）
     """
     try:
-        # 設定 Gemini API
+        # 步驟 1：檢查音訊品質
+        needs_conversion, warnings = check_audio_quality(audio_path)
+        
+        # 步驟 2：自動轉換為 Gemini 最佳格式（M4A）
+        # 即使不需要轉換，也統一轉成 M4A 確保相容性
+        temp_converted = tempfile.NamedTemporaryFile(delete=False, suffix='.m4a')
+        temp_converted.close()
+        
+        success, message = convert_audio_to_standard_format(
+            audio_path, 
+            temp_converted.name, 
+            target_format='m4a'
+        )
+        
+        if not success:
+            return f"[Gemini 錯誤: 音訊轉換失敗 - {message}]"
+        
+        working_path = temp_converted.name
+        
+        # 步驟 3：設定 Gemini API
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel('gemini-2.0-flash-exp')
         
-        # 檢查檔案是否存在
-        if not os.path.exists(audio_path):
-            return f"[Gemini 錯誤: 找不到檔案]"
+        # 步驟 4：檢查檔案大小
+        file_size_mb = os.path.getsize(working_path) / (1024 * 1024)
         
-        # 取得檔案資訊
-        file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
-        file_ext = os.path.splitext(audio_path)[1].lower()
-        
-        # inline 模式的檔案大小限制較小（約 10-20MB）
+        # inline 模式的檔案大小限制
         if file_size_mb > 15:
-            return f"[Gemini 錯誤: 檔案過大 ({file_size_mb:.1f}MB，建議 < 15MB)]"
+            try:
+                os.unlink(working_path)
+            except:
+                pass
+            return f"[Gemini 錯誤: 轉換後檔案過大 ({file_size_mb:.1f}MB，限制 15MB)]"
         
-        # 讀取音訊檔案
-        with open(audio_path, 'rb') as f:
+        # 步驟 5：讀取音訊檔案
+        with open(working_path, 'rb') as f:
             audio_bytes = f.read()
         
-        # 判斷 MIME type
-        mime_types = {
-            '.mp3': 'audio/mp3',
-            '.m4a': 'audio/mp4',
-            '.wav': 'audio/wav',
-            '.flac': 'audio/flac'
-        }
-        mime_type = mime_types.get(file_ext, 'audio/mp4')
+        # 統一使用 audio/mp4 MIME type（M4A 的標準 MIME type）
+        mime_type = 'audio/mp4'
         
         # 定義轉譯提示詞
         prompt = """
@@ -301,7 +435,7 @@ def transcribe_gemini(audio_path):
         5. 盡可能完整辨識所有內容。
         """
         
-        # 使用 inline 方式傳送音訊（不上傳檔案）
+        # 使用 inline 方式傳送音訊
         try:
             response = model.generate_content([
                 prompt,
@@ -311,17 +445,29 @@ def transcribe_gemini(audio_path):
                 }
             ])
             
+            # 清理暫存檔
+            try:
+                os.unlink(working_path)
+            except:
+                pass
+            
             if not response or not response.text:
                 return "[無法辨識內容]"
             
             return response.text.strip()
             
         except Exception as gen_error:
+            # 清理暫存檔
+            try:
+                os.unlink(working_path)
+            except:
+                pass
+            
             error_str = str(gen_error)
             if "quota" in error_str.lower() or "429" in error_str:
                 return "[Gemini 錯誤: API 配額不足]"
             elif "unsupported" in error_str.lower() or "invalid" in error_str.lower():
-                return f"[Gemini 錯誤: 不支援的格式 {mime_type}]"
+                return f"[Gemini 錯誤: 格式問題 - {error_str[:100]}]"
             elif "safety" in error_str.lower():
                 return "[Gemini 錯誤: 內容被安全過濾器阻擋]"
             else:
@@ -523,81 +669,34 @@ if st.button("🚀 開始轉譯", type="primary"):
             with open(temp_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
             
-            # 2a. 為 Google STT 轉檔為 WAV（16kHz, 單聲道, PCM）
-            wav_path = os.path.join(temp_dir, f"converted_stt_{i}.wav")
+            # 1.5 檢查音訊品質並顯示警告
+            needs_conversion, quality_warnings = check_audio_quality(temp_path)
+            if quality_warnings:
+                with st.expander(f"⚠️ {uploaded_file.name} 品質提示", expanded=False):
+                    for warning in quality_warnings:
+                        st.warning(warning)
+                    st.info("系統將自動轉換為最佳格式")
             
-            # 2b. 為 Gemini 轉檔為 M4A（Gemini 更支援這個格式）
-            m4a_path = os.path.join(temp_dir, f"converted_gemini_{i}.m4a")
-            
+            # 2. 取得音訊資訊
             try:
-                status_text.text(f"🔄 轉檔中：{uploaded_file.name}...")
+                duration_sec = get_audio_info(temp_path)
+                if duration_sec == 0:
+                    st.error(f"無法讀取 {uploaded_file.name} 的音訊資訊")
+                    continue
                 
-                # === 轉檔為 WAV（給 Google STT 用） ===
-                if use_stt:
-                    ffmpeg_wav_cmd = [
-                        'ffmpeg',
-                        '-i', temp_path,
-                        '-ar', '16000',
-                        '-ac', '1',
-                        '-acodec', 'pcm_s16le',
-                        '-y',
-                        wav_path
-                    ]
-                    
-                    result = subprocess.run(
-                        ffmpeg_wav_cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        timeout=120
-                    )
-                    
-                    if result.returncode != 0:
-                        raise Exception(f"WAV 轉檔失敗：{result.stderr.decode()[:200]}")
+                status_text.text(f"✅ 已載入：{uploaded_file.name} (長度: {format_duration(duration_sec)})")
                 
-                # === 轉檔為 M4A（給 Gemini 用） ===
-                if use_gemini:
-                    ffmpeg_m4a_cmd = [
-                        'ffmpeg',
-                        '-i', temp_path,
-                        '-acodec', 'aac',       # 使用 AAC 編碼
-                        '-ar', '16000',
-                        '-ac', '1',
-                        '-b:a', '64k',
-                        '-y',
-                        m4a_path
-                    ]
-                    
-                    result = subprocess.run(
-                        ffmpeg_m4a_cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        timeout=120
-                    )
-                    
-                    if result.returncode != 0:
-                        raise Exception(f"M4A 轉檔失敗：{result.stderr.decode()[:200]}")
-                
-                # 取得音訊長度（從任一轉檔後的檔案）
-                audio_file_for_duration = wav_path if use_stt else m4a_path
-                sound = AudioSegment.from_file(audio_file_for_duration)
-                duration_sec = len(sound) / 1000.0
-                
-                status_text.text(f"✅ 轉檔完成：{uploaded_file.name} (長度: {format_duration(duration_sec)})")
-                
-            except subprocess.TimeoutExpired:
-                st.error(f"檔案 {uploaded_file.name} 轉檔超時（超過 120 秒）")
-                continue
             except Exception as e:
-                st.error(f"檔案 {uploaded_file.name} 轉檔失敗：{str(e)[:200]}")
+                st.error(f"檔案 {uploaded_file.name} 處理失敗：{str(e)[:200]}")
                 continue
 
             # 3. 解析檔名中的時間資訊
             base_dt = extract_datetime_from_filename(uploaded_file.name)
             
-            # 4. 執行 Google STT（使用 WAV）
+            # 4. 執行 Google STT（函數內部會自動轉換為 WAV）
             if use_stt:
                 status_text.text(f"🎤 Google STT 辨識中：{uploaded_file.name}...")
-                res = transcribe_google_stt(wav_path, uploaded_file.name, max_chunk_duration=chunk_duration)
+                res = transcribe_google_stt(temp_path, uploaded_file.name, max_chunk_duration=chunk_duration)
                 stt_records.append({
                     'filename': uploaded_file.name, 
                     'datetime': base_dt,
@@ -606,10 +705,10 @@ if st.button("🚀 開始轉譯", type="primary"):
                 })
                 status_text.text(f"✅ Google STT 完成：{uploaded_file.name}")
 
-            # 5. 執行 Gemini（使用 M4A）
+            # 5. 執行 Gemini（函數內部會自動轉換為 M4A）
             if use_gemini:
                 status_text.text(f"🤖 Gemini 辨識中：{uploaded_file.name}...")
-                res = transcribe_gemini(m4a_path)  # 改用 M4A
+                res = transcribe_gemini(temp_path)  # 直接使用原始檔案
                 gemini_records.append({
                     'filename': uploaded_file.name, 
                     'datetime': base_dt,
