@@ -554,6 +554,12 @@ def generate_comparison_report(stt_records, gemini_records):
     lines.append(f"檔案數量：{len(stt_records)} 個")
     lines.append("═" * 80 + "\n")
     
+    # 防止空列表
+    if not stt_records or not gemini_records:
+        lines.append("⚠️  沒有可比較的記錄")
+        lines.append("=" * 80)
+        return "\n".join(lines)
+    
     # 統計資訊
     total_stt_chars = sum(len(r['transcript']) for r in stt_records)
     total_gemini_chars = sum(len(r['transcript']) for r in gemini_records)
@@ -562,7 +568,12 @@ def generate_comparison_report(stt_records, gemini_records):
     lines.append("─" * 80)
     lines.append(f"Google STT 總字元數：{total_stt_chars}")
     lines.append(f"Gemini 總字元數：{total_gemini_chars}")
-    lines.append(f"平均字元差異：{abs(total_stt_chars - total_gemini_chars) / len(stt_records):.1f} 字元/檔")
+    
+    # 計算平均差異（防止除以零）
+    if len(stt_records) > 0:
+        avg_diff = abs(total_stt_chars - total_gemini_chars) / len(stt_records)
+        lines.append(f"平均字元差異：{avg_diff:.1f} 字元/檔")
+    
     lines.append("")
     
     # 逐檔比較
@@ -766,59 +777,63 @@ if st.button("🚀 開始轉譯", type="primary"):
             with tab_objs[2]:
                 st.subheader("📊 逐檔比較結果")
                 
-                # 產生比較表格
-                comparison_data = []
-                for i in range(len(stt_records)):
-                    stt_rec = stt_records[i]
-                    gemini_rec = gemini_records[i]
+                # 檢查是否有記錄
+                if not stt_records or not gemini_records:
+                    st.warning("⚠️ 沒有可比較的記錄。可能所有檔案處理失敗。")
+                else:
+                    # 產生比較表格
+                    comparison_data = []
+                    for i in range(len(stt_records)):
+                        stt_rec = stt_records[i]
+                        gemini_rec = gemini_records[i]
+                        
+                        comparison_data.append({
+                            "檔案": stt_rec['filename'],
+                            "時長": format_duration(stt_rec['duration_sec']),
+                            "Google STT": stt_rec['transcript'][:100] + "..." if len(stt_rec['transcript']) > 100 else stt_rec['transcript'],
+                            "Gemini": gemini_rec['transcript'][:100] + "..." if len(gemini_rec['transcript']) > 100 else gemini_rec['transcript']
+                        })
                     
-                    comparison_data.append({
-                        "檔案": stt_rec['filename'],
-                        "時長": format_duration(stt_rec['duration_sec']),
-                        "Google STT": stt_rec['transcript'][:100] + "..." if len(stt_rec['transcript']) > 100 else stt_rec['transcript'],
-                        "Gemini": gemini_rec['transcript'][:100] + "..." if len(gemini_rec['transcript']) > 100 else gemini_rec['transcript']
-                    })
-                
-                # 顯示表格
-                import pandas as pd
-                df = pd.DataFrame(comparison_data)
-                st.dataframe(df, use_container_width=True, height=400)
-                
-                # 詳細逐檔比較
-                st.markdown("---")
-                st.subheader("📝 詳細逐檔對照")
-                
-                for i, (stt_rec, gemini_rec) in enumerate(zip(stt_records, gemini_records)):
-                    with st.expander(f"📄 {stt_rec['filename']} ({format_duration(stt_rec['duration_sec'])})"):
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            st.markdown("**🔵 Google STT**")
-                            st.text_area(
-                                "STT 結果", 
-                                stt_rec['transcript'], 
-                                height=200, 
-                                key=f"compare_stt_{i}",
-                                label_visibility="collapsed"
-                            )
-                            stt_length = len(stt_rec['transcript'])
-                            st.caption(f"字數: {stt_length} 字元")
-                        
-                        with col2:
-                            st.markdown("**🟢 Gemini**")
-                            st.text_area(
-                                "Gemini 結果", 
-                                gemini_rec['transcript'], 
-                                height=200, 
-                                key=f"compare_gemini_{i}",
-                                label_visibility="collapsed"
-                            )
-                            gemini_length = len(gemini_rec['transcript'])
-                            st.caption(f"字數: {gemini_length} 字元")
-                
-                # 生成比較報告文字檔
-                comparison_report = generate_comparison_report(stt_records, gemini_records)
-                zf.writestr("Comparison_Report.txt", comparison_report)
+                    # 顯示表格
+                    import pandas as pd
+                    df = pd.DataFrame(comparison_data)
+                    st.dataframe(df, use_container_width=True, height=400)
+                    
+                    # 詳細逐檔比較
+                    st.markdown("---")
+                    st.subheader("📝 詳細逐檔對照")
+                    
+                    for i, (stt_rec, gemini_rec) in enumerate(zip(stt_records, gemini_records)):
+                        with st.expander(f"📄 {stt_rec['filename']} ({format_duration(stt_rec['duration_sec'])})"):
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.markdown("**🔵 Google STT**")
+                                st.text_area(
+                                    "STT 結果", 
+                                    stt_rec['transcript'], 
+                                    height=200, 
+                                    key=f"compare_stt_{i}",
+                                    label_visibility="collapsed"
+                                )
+                                stt_length = len(stt_rec['transcript'])
+                                st.caption(f"字數: {stt_length} 字元")
+                            
+                            with col2:
+                                st.markdown("**🟢 Gemini**")
+                                st.text_area(
+                                    "Gemini 結果", 
+                                    gemini_rec['transcript'], 
+                                    height=200, 
+                                    key=f"compare_gemini_{i}",
+                                    label_visibility="collapsed"
+                                )
+                                gemini_length = len(gemini_rec['transcript'])
+                                st.caption(f"字數: {gemini_length} 字元")
+                    
+                    # 生成比較報告文字檔（在有記錄的情況下）
+                    comparison_report = generate_comparison_report(stt_records, gemini_records)
+                    zf.writestr("Comparison_Report.txt", comparison_report)
 
     # 下載按鈕
     st.success("✅ 全部轉譯完成！")
