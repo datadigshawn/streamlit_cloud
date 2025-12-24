@@ -740,7 +740,7 @@ if st.button("🚀 開始轉譯", type="primary"):
         if use_stt:
             with tab_objs[0]:
                 merged_txt = generate_merged_content(stt_records)
-                st.text_area("合併預覽", merged_txt, height=300)
+                st.text_area("合併預覽", merged_txt, height=300, key="stt_merged_preview")
                 zf.writestr("GoogleSTT_Merged.txt", merged_txt)
                 
                 # 寫入個別檔案
@@ -753,7 +753,7 @@ if st.button("🚀 開始轉譯", type="primary"):
             idx = 1 if use_stt else 0
             with tab_objs[idx]:
                 merged_txt = generate_merged_content(gemini_records)
-                st.text_area("合併預覽", merged_txt, height=300)
+                st.text_area("合併預覽", merged_txt, height=300, key="gemini_merged_preview")
                 zf.writestr("Gemini_Merged.txt", merged_txt)
                 
                 # 寫入個別檔案
@@ -798,7 +798,7 @@ if st.button("🚀 開始轉譯", type="primary"):
                                 "STT 結果", 
                                 stt_rec['transcript'], 
                                 height=200, 
-                                key=f"stt_{i}",
+                                key=f"compare_stt_{i}",
                                 label_visibility="collapsed"
                             )
                             stt_length = len(stt_rec['transcript'])
@@ -810,7 +810,7 @@ if st.button("🚀 開始轉譯", type="primary"):
                                 "Gemini 結果", 
                                 gemini_rec['transcript'], 
                                 height=200, 
-                                key=f"gemini_{i}",
+                                key=f"compare_gemini_{i}",
                                 label_visibility="collapsed"
                             )
                             gemini_length = len(gemini_rec['transcript'])
