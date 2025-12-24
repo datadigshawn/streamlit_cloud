@@ -206,7 +206,7 @@ def convert_audio_to_standard_format(input_path, output_path, target_format='wav
         return False, f"轉換錯誤：{str(e)[:200]}"
 
 def get_audio_info(file_path):
-    """取得音訊長度 (秒)"""
+    """取得音訊長度 (秒) - 使用 ffprobe 避免 ADPCM 解碼問題"""
     try:
         # 先檢查檔案是否存在
         if not os.path.exists(file_path):
@@ -219,15 +219,28 @@ def get_audio_info(file_path):
             st.error(f"檔案是空的: {file_path}")
             return 0
         
-        # 嘗試讀取音訊
-        audio = AudioSegment.from_file(file_path)
-        duration = len(audio) / 1000.0
+        # 使用 ffprobe 讀取音訊資訊（避免 pydub 的 ADPCM 問題）
+        cmd = [
+            'ffprobe', '-v', 'quiet', '-print_format', 'json',
+            '-show_format', file_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        
+        if result.returncode != 0:
+            st.error(f"無法讀取 {file_path} 的資訊")
+            return 0
+        
+        data = json.loads(result.stdout)
+        duration = float(data.get('format', {}).get('duration', 0))
         
         if duration == 0:
             st.warning(f"音訊長度為 0: {file_path}")
         
         return duration
         
+    except subprocess.TimeoutExpired:
+        st.error(f"讀取音訊超時: {file_path}")
+        return 0
     except Exception as e:
         st.error(f"無法讀取音訊資訊: {str(e)}")
         return 0
